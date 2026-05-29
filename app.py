@@ -1,24 +1,35 @@
 import streamlit as st
 import numpy as np
 import matplotlib.pyplot as plt
-import matplotlib.patches as patches
+import matplotlib.font_manager as fm
 import math
 import warnings
 import io
+import os
 from datetime import datetime, timedelta
 from PIL import Image, ImageDraw, ImageFont
 import pandas as pd
 
 warnings.filterwarnings("ignore")
 
-plt.rcParams["font.sans-serif"] = ["SimHei", "WenQuanYi Micro Hei", "DejaVu Sans"]
+# ===================== 全局字体配置（与迈克尔逊项目完全对齐，云端+本地双兼容） =====================
+FONT_FILE = "SourceHanSansCN-Regular1.otf"
+try:
+    # 云端：加载项目内字体并全局注册
+    fm.fontManager.addfont(FONT_FILE)
+    plt.rcParams["font.sans-serif"] = ["Source Han Sans CN"]
+except Exception:
+    # 本地降级兼容
+    plt.rcParams["font.sans-serif"] = ["SimHei", "WenQuanYi Micro Hei", "DejaVu Sans"]
+
 plt.rcParams["axes.unicode_minus"] = False
 plt.switch_backend("Agg")
+# ==================================================================================================
 
 MAX_USES_PER_HOUR = 3
 
 
-# ===================== 导出次数限制 =====================
+# ===================== 导出次数限制逻辑 =====================
 def check_usage_limit(mode: str) -> bool:
     now = datetime.now()
     key = f"usage_records_{mode}"
@@ -45,20 +56,31 @@ def get_remaining_uses(mode: str) -> int:
     return max(0, MAX_USES_PER_HOUR - len(valid_records))
 
 
-# ===================== 水印 =====================
+# ===================== 图片水印（三层降级方案，彻底解决方框问题） =====================
 def add_image_watermark(img: Image.Image, p_angle: int, a_angle: int) -> Image.Image:
     draw = ImageDraw.Draw(img)
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     water_text = f"{now_str}\n起偏器：{p_angle}°  检偏器：{a_angle}°"
+
+    # 三层降级：和迈克尔逊项目完全对齐
     try:
-        font = ImageFont.truetype("simhei.ttf", 22)
-    except:
-        font = ImageFont.load_default()
+        if os.path.exists(FONT_FILE):
+            font = ImageFont.truetype(FONT_FILE, 22)
+        else:
+            raise FileNotFoundError("项目内字体文件不存在")
+    except Exception:
+        try:
+            # 尝试加载云端预装的文泉驿字体
+            font = ImageFont.truetype("WenQuanYi Zen Hei", 22)
+        except Exception:
+            # 终极兜底
+            font = ImageFont.load_default(size=22)
+
     draw.text((15, img.height - 60), water_text, fill=(255, 0, 0), font=font)
     return img
 
 
-# ===================== 偏振光绘图 =====================
+# ===================== 偏振光绘图逻辑 =====================
 def draw_rotated_line(ax, x_center, y_center, base_length, angle_deg, color='red', linewidth=2, is_analyzed=False,
                       analyzer_angle=0):
     angle_rad = math.radians(angle_deg)
@@ -95,6 +117,8 @@ def plot_polarization_experiment(polarizer_angle, analyzer_angle, bg):
     for x_pos in [-25, -23, -21]:
         ax.plot([x_pos, x_pos], [-3, 3], linestyle='-', color='red', linewidth=2)
         ax.plot(x_pos, 0, 'o', markersize=6, color='red')
+
+    import matplotlib.patches as patches
     ellipse1 = patches.Ellipse((-12, 0), width=7, height=12, angle=0, edgecolor='black', facecolor='green', alpha=0.3,
                                linewidth=2)
     ax.add_patch(ellipse1)
@@ -104,17 +128,20 @@ def plot_polarization_experiment(polarizer_angle, analyzer_angle, bg):
     rectangle = patches.Rectangle((23, -5), width=5, height=10, edgecolor='black', facecolor='white', alpha=0.5,
                                   linewidth=2)
     ax.add_patch(rectangle)
+
     transmittance = calculate_measured_transmittance(polarizer_angle, analyzer_angle, bg)
     if transmittance > 0.01:
         circle = patches.Circle((25.5, 0), radius=0.5, edgecolor='blue', facecolor='red',
                                 alpha=0.1 + 0.9 * transmittance, linewidth=0.1)
         ax.add_patch(circle)
+
     draw_rotated_line(ax, -12, 0, 7, polarizer_angle, 'green', 2, is_analyzed=False)
     for x_pos in [-5, -3, -1]:
         draw_rotated_line(ax, x_pos, 0, 6, polarizer_angle, 'red', 2, is_analyzed=False)
     draw_rotated_line(ax, 7, 0, 7, analyzer_angle, 'green', 2, is_analyzed=False)
     for x_pos in [14, 16, 18]:
         draw_rotated_line(ax, x_pos, 0, 6, analyzer_angle, 'red', 2, is_analyzed=True, analyzer_angle=polarizer_angle)
+
     ax.set_xlim(-30, 30)
     ax.set_ylim(-12, 12)
     ax.set_aspect('equal')
@@ -125,6 +152,8 @@ def plot_polarization_experiment(polarizer_angle, analyzer_angle, bg):
         spine.set_visible(True)
         spine.set_linewidth(1.5)
         spine.set_color('#666')
+
+    # 全局字体已生效，无需额外指定参数
     ax.text(-23, 8, '自然光', ha='center', va='center', fontsize=12,
             bbox=dict(boxstyle='round,pad=0.3', facecolor='red', alpha=0.7))
     ax.text(-12, 8, f'起偏器\n{polarizer_angle}°', ha='center', va='center', fontsize=12,
@@ -133,39 +162,31 @@ def plot_polarization_experiment(polarizer_angle, analyzer_angle, bg):
             bbox=dict(boxstyle='round,pad=0.3', facecolor='lightblue', alpha=0.7))
     ax.text(25.5, 8, f'光 屏\n {transmittance * 100:.1f}%', ha='center', va='center', fontsize=12,
             bbox=dict(boxstyle='round,pad=0.3', facecolor='yellow', alpha=0.7))
+
     plt.tight_layout()
     return fig
 
 
-# ===================== 马吕斯动态绘图（支持回退，实测有效） =====================
+# ===================== 马吕斯动态绘图 =====================
 def plot_malus_scatter(current_angle, bg):
     import random
-
-    # 1. 生成当前角度的测量值（带±1°误差）
     noisy_angle = current_angle + random.uniform(-1, 1)
     current_theory = calculate_transmittance(0, noisy_angle)
     current_measured = (current_theory + bg) / (1 + bg)
 
-    # 2. 关键修改：只保留 ≤ 当前角度的数据，实现回退效果
-    #    先过滤掉所有大于当前角度的点，再更新当前点
     filtered_data = [
         (ang, val) for ang, val in st.session_state.collected_malus_data
         if ang <= current_angle
     ]
-    # 用字典去重，确保同一角度只保留最新值
     collected_dict = {ang: val for ang, val in filtered_data}
     collected_dict[current_angle] = current_measured
     st.session_state.collected_malus_data = list(collected_dict.items())
 
-    # 3. 绘图时按角度排序，保证曲线连续
     fig, ax = plt.subplots(figsize=(4, 2.5), dpi=100)
     theta = np.linspace(90, 270, 200)
     theory_I = np.cos(np.radians(theta)) ** 2
 
-    # 理论曲线
     ax.plot(theta, theory_I, color='blue', linestyle='--', linewidth=1, alpha=0.6, label='理论曲线')
-
-    # 实测曲线：只画当前已采集的点（≤ current_angle）
     collected = st.session_state.collected_malus_data
     if collected:
         collected_sorted = sorted(collected, key=lambda x: x[0])
@@ -173,7 +194,6 @@ def plot_malus_scatter(current_angle, bg):
         val_list = [item[1] for item in collected_sorted]
         ax.plot(ang_list, val_list, color='red', linestyle='-', linewidth=1, alpha=0.8, label='实测曲线（模拟）')
 
-    # 会动的红点
     current_theory_true = calculate_transmittance(0, current_angle)
     current_measured_true = (current_theory_true + bg) / (1 + bg)
     ax.scatter(current_angle, current_measured_true, color='red', s=50, zorder=5)
@@ -185,16 +205,15 @@ def plot_malus_scatter(current_angle, bg):
     ax.grid(alpha=0.3)
     ax.tick_params(axis='both', labelsize=7)
     ax.legend(fontsize=7)
+
     plt.tight_layout()
     return fig
 
 
-# ===================== 实验数据预览弹窗（已完美修改） =====================
+# ===================== 实验数据预览弹窗 =====================
 @st.dialog("实验数据预览", width="medium")
 def show_malus_data(bg):
     st.success("✅ 所有数据已采集完成！")
-
-    # 生成完整理论/实测数据表
     angles = list(range(90, 271, 10))
     theory_list = []
     measured_list = []
@@ -205,14 +224,12 @@ def show_malus_data(bg):
         theory_list.append(round(theory, 3))
         measured_list.append(round(measured, 3))
 
-    # 完美横版表格：角度/° 稳定显示
     columns = ["角度/°"] + [str(a) for a in angles]
     theory_row = ["理论值"] + [f"{v:.3f}" for v in theory_list]
     measured_row = ["实测值"] + [f"{v:.3f}" for v in measured_list]
     df = pd.DataFrame([theory_row, measured_row], columns=columns)
     st.dataframe(df, use_container_width=True, hide_index=True)
 
-    # 线性拟合图
     collected = st.session_state.collected_malus_data
     if collected:
         x_data = []
@@ -235,6 +252,7 @@ def show_malus_data(bg):
         ax.set_ylabel("归一化光强 I", fontsize=8)
         ax.grid(alpha=0.3)
         ax.legend(fontsize=8)
+
         plt.tight_layout()
         st.pyplot(fig)
         plt.close(fig)
@@ -247,18 +265,18 @@ def show_malus_data(bg):
         """)
 
 
-# ===================== 弹窗 =====================
+# ===================== 弹窗：实验原理 & 使用说明 =====================
 @st.dialog("实验原理", width="small")
 def show_principle():
     st.markdown(
-        """<div style="font-size:17px; line-height:1.6;">1. 自然光通过起偏器后成为线偏振光。<br>2. 转动检偏器，光强随角度周期性变化。<br>3. 0°最亮，90°消光。<br>4. 马吕斯定律：I=I'xcos²θ</div>""",
+        """<div style="font-size:17px; line-height:1.6;">1. 自然光通过起偏器后成为线偏振光。<br>2. 转动检偏器，光强随角度周期性变化。<br>3. 0°最亮，90°消光。<br>4. 马吕斯定律：I=I'×cos²θ</div>""",
         unsafe_allow_html=True)
 
 
 @st.dialog("使用说明", width="small")
 def show_guide():
     st.markdown(
-        """<div style="font-size:17px; line-height:1.6;"><b>操作步骤</b><br>1. 选择偏振光产生和检验/马吕斯定律<br>2. 调整起偏器、检偏器角度<br>3. 观察光屏亮度<br>4. 偏正光产生和检验模式可导出带水印PNG，3次/小时</div>""",
+        """<div style="font-size:17px; line-height:1.6;"><b>操作步骤</b><br>1. 选择偏振光产生和检验/马吕斯定律<br>2. 调整起偏器、检偏器角度<br>3. 观察光屏亮度<br>4. 偏振光产生和检验模式可导出带水印PNG，3次/小时</div>""",
         unsafe_allow_html=True)
 
 
@@ -296,7 +314,7 @@ def main():
     except Exception:
         mobile_view = False
 
-    # 初始化状态
+    # 初始化会话状态
     if "polarizer_angle" not in st.session_state:
         st.session_state.polarizer_angle = 0
     if "analyzer_angle" not in st.session_state:
@@ -310,7 +328,7 @@ def main():
     if "collected_malus_data" not in st.session_state:
         st.session_state.collected_malus_data = []
 
-    # -------------------- 手机端 --------------------
+    # 手机端布局
     if mobile_view:
         if st.button("实验原理", use_container_width=True):
             show_principle()
@@ -330,10 +348,12 @@ def main():
             st.session_state.reset_counter += 1
             st.rerun()
 
-        if st.button("偏振光产生和检验", type="primary" if st.session_state.mode == "demo" else "secondary", use_container_width=True):
+        if st.button("偏振光产生和检验", type="primary" if st.session_state.mode == "demo" else "secondary",
+                     use_container_width=True):
             st.session_state.mode = "demo"
             st.rerun()
-        if st.button("马吕斯定律", type="primary" if st.session_state.mode == "sim" else "secondary", use_container_width=True):
+        if st.button("马吕斯定律", type="primary" if st.session_state.mode == "sim" else "secondary",
+                     use_container_width=True):
             st.session_state.mode = "sim"
             st.session_state.analyzer_angle = 90
             st.session_state.collected_malus_data = []
@@ -343,21 +363,33 @@ def main():
             col_label, col_input = st.columns([1, 1])
             with col_label: st.markdown("起偏器角度")
             with col_input:
-                st.session_state.polarizer_angle = st.number_input("起偏器角度", 0, 360, st.session_state.polarizer_angle, 10, "%d", label_visibility="collapsed", key=f"p{st.session_state.reset_counter}")
+                st.session_state.polarizer_angle = st.number_input("起偏器角度", 0, 360,
+                                                                   st.session_state.polarizer_angle, 10, "%d",
+                                                                   label_visibility="collapsed",
+                                                                   key=f"p{st.session_state.reset_counter}")
 
         if st.session_state.mode == "sim":
             col_label, col_input = st.columns([1, 1])
             with col_label: st.markdown("环境光噪声")
             with col_input:
-                st.session_state.bg_noise = st.number_input("环境光噪声", min_value=0.10, max_value=0.30, value=st.session_state.bg_noise, step=0.02, format="%.2f", label_visibility="collapsed", key=f"bg{st.session_state.reset_counter}")
+                st.session_state.bg_noise = st.number_input("环境光噪声", min_value=0.10, max_value=0.30,
+                                                            value=st.session_state.bg_noise, step=0.02, format="%.2f",
+                                                            label_visibility="collapsed",
+                                                            key=f"bg{st.session_state.reset_counter}")
 
         col_label, col_input = st.columns([1, 1])
-        with col_label: st.markdown("检偏器角度")
+        with col_label:
+            st.markdown("检偏器角度")
         with col_input:
             if st.session_state.mode == "demo":
-                st.session_state.analyzer_angle = st.number_input("检偏器角度", 0, 360, st.session_state.analyzer_angle, 10, "%d", label_visibility="collapsed", key=f"a{st.session_state.reset_counter}")
+                st.session_state.analyzer_angle = st.number_input("检偏器角度", 0, 360, st.session_state.analyzer_angle,
+                                                                  10, "%d", label_visibility="collapsed",
+                                                                  key=f"a{st.session_state.reset_counter}")
             else:
-                st.session_state.analyzer_angle = st.number_input("检偏器角度_malus", 90, 270, st.session_state.analyzer_angle, 10, "%d", label_visibility="collapsed", key=f"am{st.session_state.reset_counter}")
+                st.session_state.analyzer_angle = st.number_input("检偏器角度_malus", 90, 270,
+                                                                  st.session_state.analyzer_angle, 10, "%d",
+                                                                  label_visibility="collapsed",
+                                                                  key=f"am{st.session_state.reset_counter}")
 
         if st.session_state.mode == "demo":
             st.markdown("演示结果导出")
@@ -369,12 +401,14 @@ def main():
                 if st.button(label, use_container_width=True, disabled=disabled):
                     if check_usage_limit("demo_export"):
                         add_usage_record("demo_export")
-                        fig = plot_polarization_experiment(st.session_state.polarizer_angle, st.session_state.analyzer_angle, 0.0)
+                        fig = plot_polarization_experiment(st.session_state.polarizer_angle,
+                                                           st.session_state.analyzer_angle, 0.0)
                         buf = io.BytesIO()
                         fig.savefig(buf, format="png", bbox_inches="tight", dpi=120)
                         buf.seek(0)
                         img = Image.open(buf).convert("RGB")
-                        img = add_image_watermark(img, st.session_state.polarizer_angle, st.session_state.analyzer_angle)
+                        img = add_image_watermark(img, st.session_state.polarizer_angle,
+                                                  st.session_state.analyzer_angle)
                         out_buf = io.BytesIO()
                         img.save(out_buf, format="PNG")
                         st.session_state.export_png = out_buf.getvalue()
@@ -383,22 +417,21 @@ def main():
                         st.rerun()
             with col_dl:
                 if "export_png" in st.session_state:
-                    st.download_button("⬇️ 下载PNG", st.session_state.export_png, "偏振光实验图.png", "image/png", use_container_width=True)
+                    st.download_button("⬇️ 下载PNG", st.session_state.export_png, "偏振光实验图.png", "image/png",
+                                       use_container_width=True)
 
         if st.session_state.mode == "sim":
             fig_scat = plot_malus_scatter(st.session_state.analyzer_angle, st.session_state.bg_noise)
             st.pyplot(fig_scat, use_container_width=True)
             plt.close(fig_scat)
 
-            # ===================== 关键：必须采完所有点才能点 =====================
             total_required = len(list(range(90, 271, 10)))
             data_ready = len(st.session_state.collected_malus_data) >= total_required
-
             btn_label = "📊 实验数据预览" if data_ready else "📊 请先采集完所有数据"
             if st.button(btn_label, use_container_width=True, disabled=not data_ready):
                 show_malus_data(st.session_state.bg_noise)
 
-    # -------------------- 电脑端 --------------------
+    # 电脑端布局
     else:
         col_plot, col_control = st.columns([3, 1])
         with col_control:
@@ -436,21 +469,33 @@ def main():
                 c1, c2 = st.columns([1, 2])
                 with c1: st.markdown("**起偏器角度**")
                 with c2:
-                    st.session_state.polarizer_angle = st.number_input("起偏器", 0, 360, st.session_state.polarizer_angle, 10, "%d", label_visibility="collapsed", key=f"p{st.session_state.reset_counter}")
+                    st.session_state.polarizer_angle = st.number_input("起偏器", 0, 360,
+                                                                       st.session_state.polarizer_angle, 10, "%d",
+                                                                       label_visibility="collapsed",
+                                                                       key=f"p{st.session_state.reset_counter}")
 
             if st.session_state.mode == "sim":
                 c5, c6 = st.columns([1, 2])
                 with c5: st.markdown("**环境光噪声**")
                 with c6:
-                    st.session_state.bg_noise = st.number_input("环境光噪声", min_value=0.10, max_value=0.30, value=st.session_state.bg_noise, step=0.02, format="%.2f", label_visibility="collapsed", key=f"bg{st.session_state.reset_counter}")
+                    st.session_state.bg_noise = st.number_input("环境光噪声", min_value=0.10, max_value=0.30,
+                                                                value=st.session_state.bg_noise, step=0.02,
+                                                                format="%.2f", label_visibility="collapsed",
+                                                                key=f"bg{st.session_state.reset_counter}")
 
             c3, c4 = st.columns([1, 2])
-            with c3: st.markdown("**检偏器角度**")
+            with c3:
+                st.markdown("**检偏器角度**")
             with c4:
                 if st.session_state.mode == "demo":
-                    st.session_state.analyzer_angle = st.number_input("检偏器", 0, 360, st.session_state.analyzer_angle, 10, "%d", label_visibility="collapsed", key=f"a{st.session_state.reset_counter}")
+                    st.session_state.analyzer_angle = st.number_input("检偏器", 0, 360, st.session_state.analyzer_angle,
+                                                                      10, "%d", label_visibility="collapsed",
+                                                                      key=f"a{st.session_state.reset_counter}")
                 else:
-                    st.session_state.analyzer_angle = st.number_input("检偏器_malus", 90, 270, st.session_state.analyzer_angle, 10, "%d", label_visibility="collapsed", key=f"am{st.session_state.reset_counter}")
+                    st.session_state.analyzer_angle = st.number_input("检偏器_malus", 90, 270,
+                                                                      st.session_state.analyzer_angle, 10, "%d",
+                                                                      label_visibility="collapsed",
+                                                                      key=f"am{st.session_state.reset_counter}")
 
             if st.session_state.mode == "demo":
                 st.markdown("演示结果导出")
@@ -462,12 +507,14 @@ def main():
                     if st.button(label, use_container_width=True, disabled=disabled):
                         if check_usage_limit("demo_export"):
                             add_usage_record("demo_export")
-                            fig = plot_polarization_experiment(st.session_state.polarizer_angle, st.session_state.analyzer_angle, 0.0)
+                            fig = plot_polarization_experiment(st.session_state.polarizer_angle,
+                                                               st.session_state.analyzer_angle, 0.0)
                             buf = io.BytesIO()
                             fig.savefig(buf, format="png", bbox_inches="tight", dpi=120)
                             buf.seek(0)
                             img = Image.open(buf).convert("RGB")
-                            img = add_image_watermark(img, st.session_state.polarizer_angle, st.session_state.analyzer_angle)
+                            img = add_image_watermark(img, st.session_state.polarizer_angle,
+                                                      st.session_state.analyzer_angle)
                             out_buf = io.BytesIO()
                             img.save(out_buf, format="PNG")
                             st.session_state.export_png = out_buf.getvalue()
@@ -476,24 +523,24 @@ def main():
                             st.rerun()
                 with col_dl:
                     if "export_png" in st.session_state:
-                        st.download_button("⬇️ 下载PNG", st.session_state.export_png, "偏振光实验图.png", "image/png", use_container_width=True)
+                        st.download_button("⬇️ 下载PNG", st.session_state.export_png, "偏振光实验图.png", "image/png",
+                                           use_container_width=True)
 
             if st.session_state.mode == "sim":
                 fig_scat = plot_malus_scatter(st.session_state.analyzer_angle, st.session_state.bg_noise)
                 st.pyplot(fig_scat, use_container_width=True)
                 plt.close(fig_scat)
 
-                # ===================== 关键：必须采完所有点才能点 =====================
                 total_required = len(list(range(90, 271, 10)))
                 data_ready = len(st.session_state.collected_malus_data) >= total_required
-
                 btn_label = "📊 实验数据预览" if data_ready else "📊 请先采集完所有数据"
                 if st.button(btn_label, use_container_width=True, disabled=not data_ready):
                     show_malus_data(st.session_state.bg_noise)
 
         with col_plot:
             bg = st.session_state.bg_noise if st.session_state.mode == "sim" else 0.0
-            fig_main = plot_polarization_experiment(st.session_state.polarizer_angle, st.session_state.analyzer_angle, bg)
+            fig_main = plot_polarization_experiment(st.session_state.polarizer_angle, st.session_state.analyzer_angle,
+                                                    bg)
             st.pyplot(fig_main, use_container_width=True)
             plt.close(fig_main)
 
